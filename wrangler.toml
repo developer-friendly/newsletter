@@ -3,6 +3,10 @@ main = "src/index.js"
 compatibility_date = "2024-08-16"
 compatibility_flags = [ "nodejs_compat" ]
 
+kv_namespaces = [
+  { binding = "NEWSLETTER", id = "f65f48198c2240c380adbef9be9eb4b5" }
+]
+
 [[d1_databases]]
 binding = "DB"
 database_name = "developer-friendly-newsletter"

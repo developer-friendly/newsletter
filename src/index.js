@@ -1,8 +1,45 @@
-import { Ulid } from "id128";
 import getQuote from "./quote.js";
+import { Client } from "@neondatabase/serverless";
+import { v4 as uuidv4 } from "uuid";
+
+async function getDB(DATABASE_URL) {
+  const client = new Client(DATABASE_URL);
+  await client.connect();
+  return client;
+}
+
+async function validateAdmin(authorization, env) {
+  if (!authorization) {
+    return false;
+  }
+
+  var encoded = authorization.replace("Basic ", "");
+  const decoded = atob(encoded);
+  const [username, password] = decoded.split(":");
+
+  const adminUsername = await env.NEWSLETTER.get("ADMIN_USERNAME");
+  const adminPassword = await env.NEWSLETTER.get("ADMIN_PASSWORD");
+
+  return username == adminUsername && password == adminPassword;
+}
+
+function withAdminValidation(handler) {
+  return async function validateAdminDecorator(request, env, ctx) {
+    const authorization = request.headers.get("Authorization");
+    if (!(await validateAdmin(authorization, env))) {
+      return new Response("Unauthorized", {
+        status: 401,
+        headers: {
+          "WWW-Authenticate": 'Basic realm="Secure Area"',
+        },
+      });
+    }
+    return await handler(request, env, ctx);
+  };
+}
 
 export default {
-  async fetch(request, env) {
+  async fetch(request, env, ctx) {
     const url = request.url;
     const { searchParams, pathname } = new URL(url);
     const method = request.method;
@@ -13,18 +50,23 @@ export default {
     }
 
     if (request.method == "GET" && pathname == "/admin/subscribers") {
-      try {
-        var limit = searchParams.get("limit") || 10;
-        var subscribers = await listSubscribers(env.DB, limit);
-        return new Response(JSON.stringify(subscribers), {
-          status: 200,
-          headers: {
-            "Content-Type": "application/json",
-          },
-        });
-      } catch (error) {
-        return new Response(error.message, { status: 500 });
-      }
+      return withAdminValidation(async function adminSubscribers(request, env) {
+        try {
+          var limit = searchParams.get("limit") || 10;
+          var subscribers = await listSubscribers(
+            await getDB(env.DATABASE_URL),
+            limit
+          );
+          return new Response(JSON.stringify(subscribers), {
+            status: 200,
+            headers: {
+              "Content-Type": "application/json",
+            },
+          });
+        } catch (error) {
+          return new Response(error.message, { status: 500 });
+        }
+      })(request, env, ctx);
     }
 
     if (method == "POST" && pathname == "/subscribe") {
@@ -47,7 +89,7 @@ export default {
           );
         }
 
-        var newSubscriber = await insertSubscriber(env.DB, subscriber);
+        var newSubscriber = await insertSubscriber(env, subscriber);
         return new Response(JSON.stringify(newSubscriber), {
           status: 201,
           headers: {
@@ -76,51 +118,63 @@ class DuplicateEmailError extends Error {
 
 async function listSubscribers(DB, limit) {
   try {
-    var { results } = await DB.prepare(
+    var { rows } = await DB.query(
       `
-      SELECT id, first_name AS firstName, email
+      SELECT id, name, email
       FROM subscribers
       ORDER BY id DESC
-      LIMIT ?1
-    `
-    )
-      .bind(limit)
-      .all();
-    return results;
+      LIMIT $1
+    `,
+      [limit]
+    );
+    return rows;
   } catch (error) {
     console.error("Error listing subscribers:", error);
     throw new Error("Failed to list subscribers");
   }
 }
 
-async function insertSubscriber(DB, subscriber) {
+async function insertSubscriber(env, subscriber) {
   const { first_name, email } = subscriber;
+  var DB = await getDB(env.DATABASE_URL);
+  var listId = await env.NEWSLETTER.get("NEWSLETTER_LIST_ID");
 
   try {
-    var userId = Ulid.generate().toCanonical();
+    console.log(`Inserting subscriber ${email}...`);
 
-    console.log(`Inserting subscriber ${userId}...`);
+    var userId = uuidv4();
 
-    var { success, meta } = await DB.prepare(
-      "INSERT INTO subscribers (id, first_name, email) VALUES (?1, ?2, ?3)"
-    )
-      .bind(userId, first_name, email)
-      .run();
-
-    console.log(
-      `Inserted ${meta.rows_written} subscriber in ${meta.duration}ms`
+    var insertSubscriber = await DB.query(
+      `
+      WITH subscriber AS (
+        INSERT INTO subscribers (uuid, name, email)
+        VALUES ($1, $2, $3)
+        RETURNING id
+      )
+      INSERT INTO subscriber_lists (subscriber_id, list_id)
+      SELECT id, $4
+      FROM subscriber
+      `,
+      [userId, first_name, email, listId]
     );
 
-    if (!success) {
+    console.log(insertSubscriber);
+
+    var rowsAffected = insertSubscriber.rowCount;
+
+    console.log(`Inserted ${rowsAffected} subscriber`);
+
+    if (!(rowsAffected > 0)) {
       throw new Error("Failed to insert subscriber");
     }
     return {
-      id: userId,
       first_name,
       email,
     };
   } catch (error) {
-    if (error.message.includes("UNIQUE constraint failed: subscribers.email")) {
+    if (
+      error.message.includes("duplicate key value violates unique constraint")
+    ) {
       console.error(
         `Error inserting subscriber: Email already exists ${email}`
       );
