@@ -1,0 +1,5 @@
+CREATE TABLE IF NOT EXISTS subscribers (
+  id UUID PRIMARY KEY,
+  first_name VARCHAR(255) NOT NULL,
+  email VARCHAR(255) NOT NULL UNIQUE
+);
