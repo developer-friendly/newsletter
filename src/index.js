@@ -71,9 +71,29 @@ export default {
 
     if (method == "POST" && pathname == "/subscribe") {
       try {
-        var subscriber = await request.json();
+        var subscriber;
 
-        if (!subscriber.first_name || !subscriber.email) {
+        const contentType = request.headers.get("Content-Type");
+
+        if (contentType === "application/json") {
+          subscriber = await request.json();
+        } else if (contentType === "application/x-www-form-urlencoded") {
+          const formData = await request.formData();
+          subscriber = {
+            first_name: formData.get("first_name"),
+            email: formData.get("email"),
+          };
+        } else {
+          return new Response(
+            JSON.stringify({
+              error: "Unsupported Content-Type",
+              hint: "Content-Type should be either application/json or application/x-www-form-urlencoded",
+            }),
+            { status: 400 }
+          );
+        }
+
+        if (!subscriber.email) {
           var valid_payload = {
             first_name: "John",
             email: "john@example.com",
@@ -155,7 +175,7 @@ async function insertSubscriber(env, subscriber) {
       SELECT id, $4
       FROM subscriber
       `,
-      [userId, first_name, email, listId]
+      [userId, first_name || "", email, listId]
     );
 
     console.log(insertSubscriber);

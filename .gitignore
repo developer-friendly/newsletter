@@ -172,3 +172,4 @@ dist
 .wrangler/
 worker-local
 .envrc
+.secrets
